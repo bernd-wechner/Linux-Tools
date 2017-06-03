@@ -1,0 +1,140 @@
+#!/bin/bash
+#
+# xstat: Extended stat
+#
+# Runs stat (see "man stat"), replacing the currently unsupported creation time with the actual creation time
+# recorded on the filesystem if there is one. The ext4 filesystem tracks it but stat does not report it on Linux
+# as yet. It is available my inspecting the filesystem with the filesystem debugger "debugfs" and so this script
+# extracts it that way, and fixes stat's output to include it.
+#
+# An excellent reference appears here:
+#
+# https://digital-forensics.sans.org/blog/2011/03/14/digital-forensics-understanding-ext4-part-2-timestamps
+#
+# And a fix to Linux coreutils is listed schedule one hopes and listed here:
+#
+# http://www.pixelbeat.org/patches/coreutils/inbox_aug_2012.html
+#
+# as: stat(1) and ls(1) support for birth time. Dependent on xstat() being provided by the kernel
+#
+# This was a nasty thing to code in bash with all it's fiddly syntax and all but hey, here it is.
+
+function escape_bt {
+    escaped=$@
+    escaped=${escaped//%W/%%W}
+    escaped=${escaped//%w/%%w}
+
+    # Note: quotes around format strings are lost by the time we get here.
+    # Shell gobbled them, and in return gaves is $@ as an array and we know
+    # each element is a complete argument abd can add quotes again for sending
+    # back to stat as a comand line option there
+    if [[ "$escaped" =~ ^(--format=|--printf=)(.*)$ ]]; then
+        escaped="${BASH_REMATCH[1]}\"${BASH_REMATCH[2]}\""
+    else # -c
+        escaped="\"$escaped\""
+    fi
+
+    echo "$escaped"
+}
+
+# Split the shell args into opts and files
+# Has to be sensitive to some stat arg peculiarities
+# Has to escape %W and %w codes in format strings (replaced by 0 and - by stat otherwise and we want to replace them with real values.
+function split_args {
+    opts=()
+    files=()
+    formatted=false
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == -* ]]; then
+            if [[ "$1" =~ ^(-c|--format|--printf) ]]; then
+                formatted=true
+            fi
+
+            if [[ "$1" == "-c" ]]; then
+                opts+=(" $1")
+                shift
+                opts+=(" $(escape_bt $1)")
+            elif [[ "$1" =~ ^(--format|--printf) ]]; then
+                opts+=(" $(escape_bt $1)")
+            else
+                opts+=(" $1")
+            fi
+        else
+            files+=(" $1")
+        fi
+
+        shift
+    done
+}
+
+function birth_time {
+    local file=$1
+
+    # Find the device the file is on
+    dev=$(df $file | sed -n '2{s/ .*$//;p}')
+
+    # Get the files inode number
+    inode=$(stat -c %i $file)
+
+    #  Run the debugfs stat command and nab the crtime line
+    line=$(sudo debugfs -R "stat <$inode>" $dev 2> /dev/null | grep 'crtime:')
+
+    # Make an array of the line (split on white space)
+    parts=($line)
+
+    # Nab the second element as the hex fields
+    hex=(${parts[1]//[:x]/ })
+
+    # Split into the two hex components (and uppercase it)
+    hextime=${hex[1]^^}
+    hexnano=${hex[2]^^}
+
+    # Two lowest order bits of nano are the two uppermose bits of the time (ext4 weirdness ;-)
+    # It means we have to pluck the lowest order two bits from hexnano and make them the two
+    # highest order bits of hex time. These will only be non zero after the year 2038 (which
+    # 32 bit seconds since epoch can't represent and filestamps will hit their limit). These
+    # two extra bits that ext4 offers suppot up until the 2106, delaying the crunch almost
+    # a century, and well past any current filesystem's expected survival ;-) whereas they
+    # may well survive 2038.
+    highbits=$((16#$hexnano&3))       # Mask all but lowest two bits
+    let "highbits <<= 32"             # Shift them left 32 places so they becomes bits 33 and 34
+    lowbits=$((16#$hextime))          # Nab the32 low bits
+    fixtime=$((highbits + lowbits))   # Add them to make a 34 bit number (of seconds since epoch)
+
+    fixnano=$((16#$hexnano>>2))       # Shift nanoseconds left two bits (the two bits we stole above)
+    fixnano=$(printf "%09d" $fixnano) # Left pad with zeros for us in the formatted output
+
+    # Format the birth time consistent with stat
+    btime=$(date -d "@$fixtime" +"%Y-%m-%d %T.$fixnano %z")
+
+    # Return the birth time
+    if test $formatted = true; then
+        echo $fixtime
+    else
+        echo $btime
+    fi
+}
+
+split_args "$@"
+
+for file in $files; do
+    # Build the sed substitutions
+    if $formatted; then
+        btf=$(birth_time $file)
+        formatted=0
+        btn=$(birth_time $file)
+        sedargs="s/%w/$btn/g;s/%W/$btf/g"
+    else
+        bt=$(birth_time $file)
+        sedargs="s/ Birth: -/ Birth: $bt/"
+    fi
+
+    # Run stat and insert the birth time where it should be
+    # eval is needed for propoer quote handing in the opts array
+    # The issue is -c "%Y %y" for example in the Opts array will not be passed to stat properly without eval.
+    eval stat ${opts[@]} ${files[@]} | sed "$sedargs"
+done
+
+if [[ ${opts[@]} =~ .*--help.* ]]; then
+    stat --help | sed "s/Usage: stat/Usage: xstat/"
+fi
