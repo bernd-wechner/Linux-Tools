@@ -1,0 +1,49 @@
+#!/usr/bin/python3
+#
+# A simple command-line utility to list the devices that Cinnamon Sound Settings will list. 
+#
+# Serves primarily to illustrate how they are read, and what common properties are available
+# for such a device.
+#
+# Conveniently illustrates whence Cinnamon Sound Settings gets the two lines it reports on a device.
+# The first line is "description" and the second is "origin".
+#
+# A device is technically a port on a card (in Pulse Audio terms) and the origin seems always to be the name of the card.
+
+import gi
+gi.require_version('Cvc', '1.0')
+
+from gi.repository import Cvc, GLib
+
+import signal
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+import sys, csv
+
+main_loop = None
+printer = None
+
+class Main:
+    def __init__(self):
+        self.controller = Cvc.MixerControl(name = "list-outputs")
+        self.controller.connect("output-added", self.device_added, "output")
+        self.controller.connect("input-added", self.device_added, "input")
+        self.controller.connect("state-changed", self.state_changed)
+        self.controller.open()
+
+    def device_added(self, controller, id, type):
+        device = getattr(self.controller, "lookup_"+type+"_id")(id)
+        row = [type, id, device.get_description(), device.get_origin(), device.get_card().get_name(), device.get_port(), device.get_active_profile(), device.get_icon_name()]
+        printer.writerow(row)
+
+    def state_changed(self, controller, id):
+        if self.controller.get_state() == Cvc.MixerControlState.READY:
+            main_loop.quit()
+
+if __name__ == "__main__":
+    header = ["type", "id", "description", "origin", "card.name", "port", "active_profile", "icon_name"]
+    printer = csv.writer(sys.stdout)
+    printer.writerow(header)
+    main = Main()
+    main_loop = GLib.MainLoop.new(None, True)
+    main_loop.run()

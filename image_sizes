@@ -1,0 +1,12 @@
+#!/bin/bash
+# Just prints the size of all specified images and a the size of the Bounding
+# box of all of them if overlaid (maximum width x maximum heigh)
+
+for image in "$@"; do
+  identify -ping -format '%f %wx%h\n' "$image"
+done
+
+w=$(identify -ping -format '%w\n' "$@" | sort | tail -1)
+h=$(identify -ping -format '%h\n' "$@" | sort | tail -1)
+
+echo "Bounding Box: ${w}x${h}"

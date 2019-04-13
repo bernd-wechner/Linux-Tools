@@ -1,0 +1,15 @@
+#!/bin/bash
+# Given a pile of images on the command line will make them all the same size
+# Finds the maximum height among them and the maximum width and scales them all
+# into that box.
+
+w=$(identify -ping -format '%w\n' "$@" | sort | tail -1)
+h=$(identify -ping -format '%h\n' "$@" | sort | tail -1)
+
+for image in "$@"; do
+  if [ -f "$image~" ]; then
+    rm "$image~"
+  fi
+  mv "$image" "$image~"
+  convert "$image~" -gravity center -background white -extent ${w}x${h} "$image"
+done

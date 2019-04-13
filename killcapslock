@@ -1,0 +1,4 @@
+#!/bin/bash
+# Disable the stupidest key in existence
+
+setxkbmap -option ctrl:nocaps

@@ -1,0 +1,5 @@
+#!/bin/bash
+#
+# A quick way to identify the configured DNS
+
+nmcli con show "Wired connection 1" | grep domain_name_servers
