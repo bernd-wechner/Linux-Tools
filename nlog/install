@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# Variables
+SERVICE_FILE="nlog.service"
+TARGET_DIR="$HOME/.config/systemd/user/"
+SERVICE_PATH="$TARGET_DIR$SERVICE_FILE"
+
+# Check if the script is being run from the correct directory
+if [ ! -f "$SERVICE_FILE" ]; then
+    echo "Error: $SERVICE_FILE not found in the current directory."
+    exit 1
+fi
+
+# Ensure the target directory exists
+mkdir -p "$TARGET_DIR"
+
+# Copy the service file to the target directory
+cp "$SERVICE_FILE" "$SERVICE_PATH"
+
+# Reload the user systemd daemon
+systemctl --user daemon-reload
+
+# Enable and start the service
+systemctl --user enable --now "$SERVICE_FILE"
+
+# copy the utilities to the home bin
+cp nlog "$HOME/bin"
+cp clog "$HOME/bin"
+cp tlog "$HOME/bin"
+cp dlog "$HOME/bin"
+
+chmod +x "$HOME/bin/nlog"
+chmod +x "$HOME/bin/clog"
+chmod +x "$HOME/bin/tlog"
+chmod +x "$HOME/bin/dlog"
+
+# Print information
+echo "Service installed and started successfully."
+echo "You can use the following commands to manage the service:"
+echo "Start the service: systemctl --user start $SERVICE_FILE"
+echo "Stop the service: systemctl --user stop $SERVICE_FILE"
+echo "Check the status of the service: systemctl --user status $SERVICE_FILE"
+echo "Check notifications using clog (cat) or tlog (tail)"
+echo
+echo "Note: You will have to purge logs yourself from time to time, not automated log rotation implemented yet. Use dlog to delete the logs."

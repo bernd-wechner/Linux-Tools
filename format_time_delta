@@ -1,0 +1,58 @@
+#!/bin/bash
+# A small demo for neat formatingof time deltas
+ 
+format_time_delta() {
+    local ref_time=$1
+    local new_time=$2
+    if [ -z "$new_time" ]; then
+        new_time=$(date '+%s')
+    fi
+    local delta=$(( new_time - ref_time ))
+    local suffix=""
+
+    if (( delta < 0 )); then
+        delta=$(( -delta ))
+    else
+        suffix=" ago"
+    fi
+
+    local years=$(( delta / 31536000 ))
+    local remainder=$(( delta % 31536000 ))
+    local months=$(( remainder / 2592000 ))
+    remainder=$(( remainder % 2592000 ))
+    local weeks=$(( remainder / 604800 ))
+    remainder=$(( remainder % 604800 ))
+    local days=$(( remainder / 86400 ))
+    remainder=$(( remainder % 86400 ))
+    local hours=$(( remainder / 3600 ))
+    remainder=$(( remainder % 3600 ))
+    local minutes=$(( remainder / 60 ))
+    local seconds=$(( remainder % 60 ))
+
+    local result=()
+    (( years > 0 )) && result+=("${years} year$([ $years -ne 1 ] && echo "s")")
+    (( months > 0 )) && result+=("${months} month$([ $months -ne 1 ] && echo "s")")
+    (( weeks > 0 )) && result+=("${weeks} week$([ $weeks -ne 1 ] && echo "s")")
+    (( days > 0 )) && result+=("${days} day$([ $days -ne 1 ] && echo "s")")
+    (( hours > 0 )) && result+=("${hours} hour$([ $hours -ne 1 ] && echo "s")")
+    (( minutes > 0 )) && result+=("${minutes} minute$([ $minutes -ne 1 ] && echo "s")")
+    (( seconds > 0 )) && result+=("${seconds} second$([ $seconds -ne 1 ] && echo "s")")
+
+    local result_str=""
+    local len=${#result[@]}
+
+    if (( len > 1 )); then
+        result_str=$(printf ", %s" "${result[@]:0:$((len-1))}")
+        result_str="${result_str:2} and ${result[-1]}"
+    else
+        result_str=${result[*]}
+    fi
+
+    echo "${result_str}${suffix}"
+}
+
+ref_time=$(date -d "2024-01-01 12:00:00" +%s)
+
+formatted_delta=$(format_time_delta "$ref_time")
+
+echo "$formatted_delta"

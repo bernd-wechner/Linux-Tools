@@ -1,0 +1,11 @@
+[Unit]
+Description=User Notification Logger
+After=graphical.target
+
+[Service]
+ExecStart=%h/bin/nlog %h/logs/notifications
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

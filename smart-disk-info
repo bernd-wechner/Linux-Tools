@@ -1,0 +1,143 @@
+#!/bin/bash
+# Produces a simple summary of disks on the systm and SMART status (Self-Monitoring, Analysis and Reporting Technology).
+#
+# Leans upon:
+#   lsblk to identify the disks on the system
+#   smartctl to get teh SMART status
+
+show_help_and_exit () {
+	echo "Usage: smart-disk-info [-dtsTh]"
+	echo
+	echo "where:"
+	echo "	-d	Order disks by device name"
+    echo "	-t	Order disks by time in service"
+	echo "	-s	Order disks by size"
+	echo "	-T	Order disks by temperature"
+	echo "	-r	Reverse sort order"
+	echo "	-h	Show help"
+	echo
+	exit
+}
+
+sort=false
+reverse=false
+while getopts "dtsTrh" flag; do
+	case "$flag" in
+		d) sort=device ;;
+        t) sort=time ;;
+		s) sort=size ;;
+		T) sort=temperature ;;
+		r) reverse=true ;;
+		h) show_help_and_exit;;
+	esac
+done
+
+IFS=$'\n' disks=($(lsblk -lpdno NAME))
+
+summary=()
+for disk in "${disks[@]}"; do
+    smart_health=$(sudo smartctl -H $disk)
+    smart_info=$(sudo smartctl -i $disk)
+    smart_attr=$(sudo smartctl -A $disk)
+
+    status=$(echo "$smart_health" | grep "result:" | awk -F: '{print $2}' | xargs)
+
+    type=$(lsblk -lpdno NAME,ROTA | grep $disk | awk '{print($2)}')
+    [ $type = 0 ] && type=SSD
+    [ $type = 1 ] && type=HDD
+
+    size=$(echo "$smart_info" | grep "User Capacity" | awk -F: '{print $2}')
+    bytes=$(echo $size  | awk '{print $1}' | tr -d ',')
+    [[ $size =~ \[(.+)\] ]] && size="${BASH_REMATCH[1]}"
+
+    model=$(echo "$smart_info" | grep "Model Family" | awk -F: '{print $2}' | xargs)
+
+    rotation=$(echo "$smart_info" | grep "Rotation Rate" | awk -F: '{print $2}' | xargs)
+
+    temperature=$(echo "$smart_attr" | grep Temperature_Celsius | awk '{print $10}')
+    [ -z $temperature ] && temperature=$(sudo smartctl -A $disk | grep Airflow_Temperature_Cel | awk '{print $10}') 
+
+    uptime=$(echo "$smart_attr" | grep Power_On_Hours | awk '{print $10}')
+    if [[ "$uptime" =~ ^[0-9]+$ ]]; then
+        format=hours
+        hours=$uptime
+    elif [[ "$uptime" =~ ^[0-9]+h.*$ ]]; then
+        format=compound
+        hours=$(echo $uptime | cut -d 'h' -f 1)
+    else
+        format=unknown
+    fi
+    years=$((hours/8760))
+    months=$((hours%8760/730))
+    weeks=$((hours%8760%730/168))
+    days=$((hours%8760%730%168/24))
+    uptime=""
+    [ $years -gt 0 ] && uptime+="$years years " 
+    [ $months -gt 0 ] && uptime+="$months months " 
+    [ $weeks -gt 0 ] && uptime+="$weeks weeks " 
+    [ $days -gt 0 ] && uptime+="$days days " 
+
+    cycles=$(echo "$smart_attr" | grep Power_Cycle_Count | awk '{print $10}')
+
+    # NO consistent error counts eem to be presented by drives.
+    #errors=$(sudo smartctl -A $disk | grep Error | awk '{print $2,$10}') 
+    #echo $disk: $errors
+
+    # Collect the smartctl exit status bits
+    #   Bit 0: Command line did not parse.
+    #   Bit 1: Device open failed, device did not return an IDENTIFY DEVICE structure, or device is in a low-power mode (see '-n' option above).
+    #   Bit 2: Some SMART or other ATA command to the disk failed, or there was a checksum error in a SMART data structure (see '-b' option above).
+    #   Bit 3: SMART status check returned "DISK FAILING".
+    #   Bit 4: We found prefail Attributes <= threshold.
+    #   Bit 5: SMART status check returned "DISK OK" but we found that some (usage or prefail) Attributes have been <= threshold at some time in the past.
+    #   Bit 6: The device error log contains records of errors.
+    #   Bit 7: The device self-test log contains records of errors.  [ATA only] Failed self-tests outdated by a newer successful extended self-test are ignored.
+
+    declare -A bit
+    sudo smartctl -H $disk >& /dev/null
+    val=$?; mask=1
+    for i in 0 1 2 3 4 5 6 7; do
+        bit[$i]=$(((val & mask) && 1))
+        mask=$((mask << 1))
+    done
+
+    #for b in "${!bit[@]}"; do
+    #    echo $b: ${bit[$b]}
+    #done
+
+    # Select the sorting key and options
+    if [ $reverse = true ]; then
+        r='r'
+    else
+        r=''
+    fi
+
+    if [ $sort = device ]; then
+        sortkey=$disk
+        sortopt=di$r
+    elif [ $sort = time ]; then
+        sortkey=$hours
+        sortopt=n$r
+    elif [ $sort = size ]; then
+        sortkey=$bytes
+        sortopt=n$r
+    elif [ $sort = temperature ]; then
+        sortkey=$temperature
+        sortopt=n$r
+    fi
+        
+    summary+=("$sortkey,$disk,$type,$size,$status,$model,$rotation,${temperature}°C,$cycles,$uptime")
+done
+
+HIGHLIGHT=$(tput setaf 1)
+RESET=$(tput sgr0)
+
+IFS=$'\n' sorted=($(printf "%s\n" "${summary[@]}" | sort -t',' -k1,1$sortopt | cut -d',' -f2-))
+
+for line in "${sorted[@]}"; do
+    if [[ $line == *FAILED!* ]]; then
+        echo "${HIGHLIGHT}$line${RESET}"
+    else
+        echo "$line"
+    fi
+done | column -ts, -N "Disk,Type,Size,SMART Health,Model,Rotation,Temperature,Power Cycles,Time In Service"

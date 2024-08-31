@@ -1,0 +1,45 @@
+#!/usr/bin/python3
+#
+# A small script that logs notifications to nominated file (or to stdout)
+#
+# noup python <this script> > ~/tmp/notifications.log &
+#
+# TODO:
+# -d options to run as Daemon under init
+# -a argument for append, else starts fresh
+#
+# On hold: Worked on a bash version instead to avoid the Python dependency. 
+# And that is now implemented as nlog with systemd support.
+
+import sys, dbus, textwrap
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
+
+logfile = sys.stdout
+
+
+def msg_cb(bus, msg):
+    args = msg.get_args_list()
+    logfile.write(f"Notification from '{args[0]}'" + '\n')
+    for l in textwrap.wrap(f"Summary: {args[3]}", initial_indent='\t', subsequent_indent='\t\t'): logfile.write(l + '\n')
+    for l in textwrap.wrap(f"Body: {args[4]}", initial_indent='\t', subsequent_indent='\t\t'): logfile.write(l + '\n')
+    logfile.flush()
+
+
+if __name__ == '__main__':
+    try:
+        if len(sys.argv) > 1:
+            logfilename = sys.argv[1]
+            logfile = open(logfilename, "a")
+
+        DBusGMainLoop(set_as_default=True)
+        bus = dbus.SessionBus()
+
+        string = "interface='org.freedesktop.Notifications',member='Notify',eavesdrop='true'"
+        bus.add_match_string(string)
+        bus.add_message_filter(msg_cb)
+
+        mainloop = GLib.MainLoop ()
+        mainloop.run ()
+    except:
+        logfile.close()
