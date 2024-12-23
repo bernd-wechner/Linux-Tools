@@ -1,0 +1,84 @@
+#!/bin/bash
+#
+# Did you upgrade your OS and Python with it, or just Python and now your venv doesn't work.
+# Piffle, activate your venv and run this script and hope for the best, it will try and fix
+# things for you. 
+#
+# The problems and fixes:
+#
+# 1. pip no longer works in the venv. The fix: in the active venv run ensurepip to fix it.
+# 2. lib is missing: 
+#		The lib will be in $VIRTUAL_ENV/lib/pythonM.m/site-packages (M.mm is Major.minor like 3.10)
+#		This has the old Python version in it.
+#       The fix: pip freeze on the old lib dir, and install all the packages with pip into the new lib dir
+# Afterwards dumps a diff for review, and you can just use pip freeze as usual and all should be fine.
+# Being Python and pip, there is plenty of scope for htings to go wrong ;-). Tee hee.   
+
+# Detect if a virtual environment is activated
+if [ -z "$VIRTUAL_ENV" ]; then
+    echo "No virtual environment detected. Please activate a virtual environment first."
+    exit 1
+fi
+
+# Upgrade pip first
+# This will create a new venv lib in the active venv 
+echo "Ensuring we have the latest pip ..."
+python -m ensurepip --upgrade
+
+# Set paths dynamically based on the active venv
+LIB_DIR="$VIRTUAL_ENV/lib"
+
+# Sort the Python directories and take the second-to-last as the old venv and the last as the new venv
+PYTHON_DIRS=($(ls -d "$LIB_DIR"/python* | sort -V))
+OLD_VENV_LIB="${PYTHON_DIRS[-2]}"
+NEW_VENV_LIB="${PYTHON_DIRS[-1]}"
+
+# Check if we have two Python directories to work with
+if [ -z "$OLD_VENV_LIB" ] || [ -z "$NEW_VENV_LIB" ]; then
+    echo "Error: we need at least two lib dirs. What we found was:"
+    ls -l "$LIB_DIR"
+    exit 1
+else
+    echo "Migrating from $(basename $OLD_VENV_LIB) to $(basename $NEW_VENV_LIB)"
+fi
+
+# Extract version numbers from the directory names (python3.10, python3.12, etc.)
+OLD_VERSION=$(basename "$OLD_VENV_LIB" | sed 's/python//')
+NEW_VERSION=$(basename "$NEW_VENV_LIB" | sed 's/python//')
+
+# Check if old venv exists
+if [ ! -d "$OLD_VENV_LIB/site-packages" ]; then
+    echo "Old venv directory ($OLD_VENV_LIB) not found!"
+    exit 1
+fi
+
+# List installed packages in the old venv
+echo "Extracting package names from old venv ($OLD_VENV_LIB)..."
+OLD_REQ="$LIB_DIR/requirements_$OLD_VERSION.txt"
+pip freeze --path $OLD_VENV_LIB/site-packages > "$OLD_REQ"
+
+# Check if old requirements are empty
+if [ ! -s "$OLD_REQ" ]; then
+    echo "No packages found in the old venv's site-packages. Exiting."
+    exit 0
+fi
+
+echo "Created $OLD_REQ based on old venv's site-packages."
+
+# Install packages in new venv from old venv's extracted packages
+echo "Installing packages in new venv..."
+while read -r pkg; do
+    echo "Installing $pkg..."
+    pip install "$pkg" || echo "Failed to install $pkg"
+done < "$OLD_REQ"
+
+# Save new installed packages to a file
+NEW_REQ="$LIB_DIR/requirements_$NEW_VERSION.txt"
+pip freeze > "$NEW_REQ"
+echo "Created $NEW_REQ for new venv."
+
+# Compare old packages with the newly installed packages
+echo "Comparing old and new installed packages..."
+diff -u "$OLD_REQ" "$NEW_REQ"
+
+echo "Migration complete. Review the comparison above."
