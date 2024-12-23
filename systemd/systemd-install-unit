@@ -1,0 +1,95 @@
+#!/bin/bash
+#
+# Systemd expects unit files in a particular place. This is documented and there is one place for system 
+# units and another for user units. systemctl knows these dirs and uses them when the "edit" command is 
+# used  which is a lovely little feature allowing you to create a unit file where it belongs. 
+#
+# But what if you don't want te dit a file but have a unit file and just want to copy it to the right
+# directory. Enter systemd-install-unit which will use systemd-unitdir to work out where and then copy
+# a specified unit file or files to that dir. 
+
+# Get the directory where this script is located
+script_dir="$(realpath "$(dirname "$0")")"
+
+# Construct the path to systemd-unitdir (try same dir first, then rely on PATH)
+unitdir_script="$script_dir/systemd-unitdir"
+if ! command -v "$unitdir_script" &> /dev/null; then
+  unitdir_script="systemd-unitdir" # Fallback to PATH
+fi
+
+
+# Parse command-line arguments
+user_flag=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --user)
+      user_flag="--user"
+      shift
+      ;;
+    *)
+      break # Stop parsing options when non-option argument is found
+      ;;
+  esac
+done
+
+# Check if any unit files are provided
+if [[ $# -eq 0 ]]; then
+  echo "Usage: $0 [--user] <unit_file> [<unit_file> ...]" >&2
+  exit 1
+fi
+
+# Loop through each unit file provided
+for unit_file in "$@"; do # "$@" expands to all remaining arguments
+  # Check if the unit file exists
+  if [[ ! -f "$unit_file" ]]; then
+    echo "Error: Unit file '$unit_file' not found." >&2
+    continue # Skip to the next unit file
+  fi
+
+  # Get the target directory using systemd-unitdir
+  if [[ -n "$user_flag" ]]; then
+    unit_dir="$("$unitdir_script" "$user_flag")"
+  else
+    unit_dir="$("$unitdir_script")"
+  fi
+  if [[ "$?" -ne 0 ]]; then
+    echo "Error: Failed to determine unit directory using systemd-unitdir." >&2
+    continue # Skip to the next unit file
+  fi
+
+  # Extract the base name of the unit file
+  unit_name=$(basename "$unit_file")
+
+  # Construct the destination path
+  destination="$unit_dir/$unit_name"
+
+  # Copy the unit file (using sudo if necessary)
+  if [[ -n "$user_flag" ]]; then
+    if cp "$unit_file" "$destination"; then
+      echo "Unit file '$unit_name' installed to '$unit_dir'."
+    else
+      echo "Error: Failed to copy unit file '$unit_file'." >&2
+      continue # Skip to the next unit file
+    fi
+  else
+    if sudo cp "$unit_file" "$destination"; then
+      echo "Unit file '$unit_name' installed to '$unit_dir'."
+    else
+      echo "Error: Failed to copy unit file '$unit_file' (sudo may be required)." >&2
+      continue # Skip to the next unit file
+    fi
+  fi
+done
+
+# Reload systemd daemon (only once after all files are copied)
+if [[ -n "$user_flag" ]]; then
+  systemctl --user daemon-reload
+  echo "Ran systemctl --user daemon-reload"
+else
+  if sudo systemctl daemon-reload; then
+    echo "Ran sudo systemctl daemon-reload"
+  else
+    echo "Error: Failed to reload systemd daemon (sudo may be required)." >&2
+    exit 1 # Exit if daemon-reload fails for system
+  fi
+fi

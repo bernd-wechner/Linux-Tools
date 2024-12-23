@@ -1,0 +1,244 @@
+#!/bin/bash
+#
+# Systemd timers can be intpected with "systemctl list-timers"
+#
+# The can be restricted to show the status of just one timer by specifying its unit file.
+#
+# It's output is not especially clear and leave a little to be desired.
+#
+# Here then is an exercise in parsing its output and presenting a more reasonable 
+# view of a single timers status also offering an insight into what it runs. 
+#
+# This was also an exercise in bash scripting as bash is powerful but also
+# bothersomely difficult at times to do simple things in. It does however lend 
+# itself well to captuing the output of commands (like systemctl) and acess to 
+# an abundance standard utilities for managing text.
+#
+# Usage:
+#
+# systemd-timer-status [--user] <timer-unit>
+
+# Because we try to parse the systemd list-timers output in bash it's useful when
+# things go swry to have some tracing code. 
+DEBUG=0 # Set to 1 to enable debug, 0 to disable
+
+# Usage function to display script usage
+usage() {
+  echo "Usage: $0 [--user] <timer-unit>"
+  exit 1
+}
+
+# Ensure at least one argument is provided
+if [ $# -lt 1 ]; then
+  usage
+fi
+
+# Check for the --user flag
+USER_FLAG=""
+if [ "$1" == "--user" ]; then
+  USER_FLAG="--user"
+  shift
+fi
+
+# Ensure a timer unit name is provided
+if [ -z "$1" ]; then
+  usage
+fi
+
+TIMER_UNIT="$1"
+
+# Check if the timer unit exists
+if ! systemctl $USER_FLAG list-timers --all | grep -q "$TIMER_UNIT"; then
+  echo "Timer unit $TIMER_UNIT not found."
+  exit 1
+fi
+
+#########################################################################################
+# Some poppers
+#
+# systemctl list-timers has an output that is non trivial to parse. It's designed to be
+# human redable and syystemctl makes no effort to provide a stable program interface for 
+# other utilities alas. It woudl be so easy if had an option of output designed for 
+# parsing in scripts, but alas no. 
+#
+# It's a line that contains dattimes, durations and unit names. 
+#
+# Flexible date parsing/identificaion is a complex thing and implemented in the "date -d"
+# utility. There is no need to reinvent that wheel! duration parsing is not easy with an 
+# external utility but not too hard with a regex.
+#
+# The poppers are designed to take the input string, and pop either a datetime or a duration 
+# or unit name from the hed of the string printing a two line rsult the first containing the
+# popped value and the second the remainder of the string. 
+
+pop_datetime() {
+    local input_string="$1"
+    local words=($input_string)
+    local extracted="" 
+    local remaining=""
+    local found_datetime=""
+
+    # To grab a maximal date time we check head progressively adding words taken from the string
+    # We want to keep collecting them until we find a valid datetime, then keep colelcting them 
+    # until we find it is invalid, the last valid datetime then is the maximal one, and we have
+    # found it. A peculiarit of "date -d" is that it permits relaitve modifiers at then end of 
+    # datetime, whichis a bothersome idiosynchracity here given "systemctl list-timers" likes
+    # to list a datetime then a duration! So if there's a relative part deteced we take that as a
+    # failure too, and stop adding words. 
+    for ((i=1; i<=${#words[@]}; i++)); do
+        local current_string="${words[@]:0:i}"
+        local parsed_datetime=$(date -d "$current_string" 2>/dev/null)
+        local has_relative_part=$(date --debug -d "$current_string" 2>&1 | grep "parsed relative part")
+        if [[ ! -z "$parsed_datetime" ]]; then found_datetime="$current_string"; fi
+
+        if [[ -z "$found_datetime" || ( ! -z "$parsed_datetime" && -z "$has_relative_part" ) ]]; then
+            extracted="$current_string"
+        else
+            remaining="${input_string##"$extracted"}"
+            break
+        fi
+    done
+
+    printf "%s\n" "$extracted" 
+    printf "%s\n" "$remaining" 
+}
+
+pop_duration() {
+    local input_string="$1"
+    local extracted=""
+    local remaining=""
+
+    # Regex to match the maximal duration (using PCRE syntax)
+    # To identify a duration at the head of the string this regex suffices and tries to 
+    # support flexible unit names.  
+    local duration_regex='^\s*([0-9]+\s*(?:d(?:ay)?s?|h(?:r|ours?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)\s*)+(?:\s*[0-9]+\s*(?:d(?:ay)?s?|h(?:r|ours?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)\s*)*\s*(?:ago)?'
+
+    extracted=$(grep -oP "$duration_regex" <<< "$input_string") # -P for PCRE
+    if [[ ! -z "$extracted" ]]; then
+        remaining="${input_string##"$extracted"}"
+        extracted=$(echo "$extracted" | xargs) # xargs removes extra whitespace
+    fi
+
+    printf "%s\n" "$extracted" 
+    printf "%s\n" "$remaining" 
+}
+
+pop_unit() {
+    local input_string="$1"
+    local unit_type="$2"
+    local extracted=""
+    local remaining=""
+
+    # To identify a unit name at the head of the string this regex assumes that a valid 
+    # unit is any filename ending in the unti type extension. .timer and .service are 
+    # the important ones here.
+    local unit_regex="(\S+\.${unit_type})"
+
+    if [[ "$input_string" =~ $unit_regex ]]; then
+        extracted="${BASH_REMATCH[1]}"
+        remaining="${input_string##*[[:space:]]${extracted}}"
+    fi
+
+    printf "%s\n" "$extracted" # Output extracted value ONLY at the end
+    printf "%s\n" "$remaining" # Output remaining string ONLY at the end
+}
+
+parse_timer() {
+    local keys=($1)  # Split into words PREMISE: single word keys)
+    local values="$2"
+    local -A components
+
+    local remaining_string="$values"
+    local output=() # Array to store the two lines
+
+    if [ "$DEBUG" -eq 1 ]; then 
+        echo 1>&2 "PARSE =============================" 
+        echo 1>&2 "KEYS: \"${keys[@]}\"" 
+        echo 1>&2 "VALUES: \"$values\"" 
+    fi
+
+    for key in "${keys[@]}"; do 
+        case " $key " in 
+            " NEXT " | " LAST ") popped=$(pop_datetime "$remaining_string") ;; 
+            " LEFT " | " PASSED ") popped=$(pop_duration "$remaining_string") ;; 
+            " UNIT ") popped=$(pop_unit "$remaining_string" "timer");;
+            " ACTIVATES ") popped=$(pop_unit "$remaining_string" "service");; 
+            *) echo 1>&2 "ERROR" ;; 
+        esac
+
+        readarray -t pops <<< "$popped"
+        components[$key]="${pops[0]}"
+        remaining_string="${pops[1]}"
+
+        if [ "$DEBUG" -eq 1 ]; then 
+            echo 1>&2 "$key =============================" 
+            echo 1>&2 "POPPED: \"$popped\"" 
+            echo 1>&2 "SPLIT: \"${pops[@]}\"" 
+            echo 1>&2 "NEXT: \"${components[NEXT]}\"" 
+            echo 1>&2 "REMAINING: \"$remaining_string\""
+        fi
+    done
+
+    declare -p components
+}
+
+get_exec_start() {
+    # Given a systemd unit file will extract the ExecStart values for reporting.
+    local unit="$1"
+    local flags="$2"
+    local exec_lines
+    local exec_start_values=""
+
+    exec_lines=$(systemctl $flags cat "$unit" 2>/dev/null | grep '^ExecStart=' || true)
+
+    if [[ -z "$exec_lines" ]]; then
+        echo ""
+        return 0
+    fi
+
+    while IFS= read -r line; do
+        line="${line#ExecStart=}"       # Remove "ExecStart=" prefix
+        line="${line##[[:space:]]}"     # Remove leading whitespace
+        line="${line%%[[:space:]]}"     # Remove trailing whitespace
+        exec_start_values+="$line"$'\n' # Append the value with a newline
+    done <<< "$exec_lines"
+
+    # Remove trailing newline
+    exec_start_values="${exec_start_values%$'\n'}"
+
+    echo "$exec_start_values"
+}
+
+status_lines=$(systemctl "$USER_FLAG" list-timers --all "$TIMER_UNIT")
+readarray -t split_lines <<< "$status_lines"
+keys=${split_lines[0]}
+values=${split_lines[1]}
+
+if [ "$DEBUG" -eq 1 ]; then 
+    echo "INIT =============================" 
+    echo "STATUS: $status_lines"
+    echo "LINES: ${split_lines[@]}"
+    echo "KEYS: $keys"
+    echo "VALUES: $values"
+    echo "Number of lines: ${#split[@]}"
+    echo "PARSED: \"$(parse_timer "$keys" "$values")\""
+else
+    eval "$(parse_timer "$keys" "$values")"
+    executes=$(get_exec_start "${components[ACTIVATES]}" "$USER_FLAG")
+    num_lines=$(echo "$executes" | wc -l)
+
+    echo -e "Last run:\t${components[LAST]}\t${components[PASSED]}"
+    echo -e "Next run:\t${components[NEXT]}\tin ${components[LEFT]}"
+
+    if [[ "$num_lines" -eq 1 ]]; then
+        echo -e "Executes:\t$executes"
+    elif [[ -n "$executes" ]]; then # Check if executes is not empty
+        echo "Executes:"
+        echo "$executes" | sed 's/^/\t/' # Prepend tab to each line
+    else
+        echo -e "Executes:\tNothing, it seeems"
+    fi
+
+    exit 0
+fi
+
