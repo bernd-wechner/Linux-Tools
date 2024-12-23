@@ -78,11 +78,12 @@ dbus-monitor "interface='org.freedesktop.Notifications'" | while read -r line; d
 
         # Prepare the formatted notification summary
         notification="----------------------------------\n"
+        notification+="Timestamp: $(date)\n"
         notification+="App Name: $app_name\n"
         notification+="Icon: $icon\n"
         notification+="Title: $title\n"
-        notification+="Body: \n$body\n"
-        notification+="Hints:\n$hints\n"
+        if [ -n "$body" ]; then notification+="Body: \n$body\n"; fi
+        if [ -n "$hints" ]; then notification+="Hints:\n$hints\n"; fi
 
         # Output the notification summary
         output "$notification"
