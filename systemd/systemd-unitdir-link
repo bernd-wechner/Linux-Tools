@@ -1,0 +1,61 @@
+#!/bin/bash
+
+# Parse command-line arguments
+user_flag=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --user)
+            user_flag="--user"
+            shift
+            ;;
+        *)
+            echo "Usage: $0 [--user]" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Create a temporary directory for the test unit file
+tmpdir=$(mktemp -d)
+trap "rm -rf '$tmpdir'" EXIT  # Clean up on exit
+
+# Generate a unique unit name
+unit_name="test-unit-$(date +%s%N).service"
+
+# Create a minimal test unit file
+cat << EOF > "$tmpdir/$unit_name"
+[Unit]
+Description=Test Unit
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Link the unit and capture the output
+if [[ -n "$user_flag" ]]; then
+    link_output=$(systemctl $user_flag link "$tmpdir/$unit_name" 2>&1)
+    sudo sudo systemctl unlink "$tmpdir/$unit_name" >& /dev/null
+else
+    link_output=$(sudo systemctl link "$tmpdir/$unit_name" 2>&1)
+    sudo sudo systemctl unlink "$tmpdir/$unit_name" >& /dev/null
+fi
+
+# Extract the link target from the output
+paths=($(echo "$link_output" | grep -oE "/[^ ]+$unit_name"))
+if [[ ${#paths[@]} -eq 2 ]]; then
+    if [[ "${paths[0]}" == "$tmpdir/$unit_name" ]]; then
+        link_target="${paths[1]}"
+    else
+        link_target="${paths[0]}"
+    fi
+    link_dir=$(dirname "$link_target")
+    echo "$link_dir"
+else
+    echo "Error: Could not determine systemd unit directory." >&2
+    return 1 # Indicate failure
+fi
+

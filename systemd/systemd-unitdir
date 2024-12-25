@@ -1,68 +1,61 @@
 #!/bin/bash
-#
-# Systemd expects unit files in a particular place. This is documented and there is one place for system 
-# units and another for user units. systemctl knows these dirs and uses them when the "edit" command is 
-# used  which is a lovely little feature allowing you to create a unit file where it belongs. 
-#
-# Alas systemctl provides no programmatic way of divining that directory. And it's useful to know. For 
-# installing unit files for example. We could just hardcode the common directories:
-#
-#   /etc/systemd/system
-# and 
-#   ~/.config/systemd/user
-#
-# But what if they change, or are in fact different on a given system and systed build and configuration?
-#
-# Given "edit" knows them we can with some trickery coax it into telling us.
-#
-#  Step 1: we ask it to use an editor that simply displays the path we're asked to edit. "echo" is perfect for that.
-#  Step 2: run systemctl edit --full --force to edit or create the unit file as needed and it will pass "echo" the path
-#  Step 3: extract the dirname from that(as it happens "edit" uses a temporary file in the target folder, and only 
-#          renames that to the actual unit name when its saved. As edit doesn't save it, it never gets renamed and 
-#          no unit file is created
-#  Step 4: use 'script' to fool systemctl into believing there's a TTY attached, it trie sto outsmart us and only 
-#          allow 'edit' on a TTY. But we cna trick it using 'script'
-#
-# This script willa ccept --user to print the user dir and without it prints the system dir.
-#
-# if the service exists it will print the dir it's in!
-# If the service doesn't it prints the dir edit would create it in. 
-#
-# Forsooth if only systemctl would be so nice as to tell us the dir!
 
-# Function to get the systemd unit directory
-get_systemd_unit_dir() {
-  local user_flag="$1" # Make user_flag local to the function
+# Find the scripts in the same directory or in the PATH
+# Find the scripts in the same directory or in the PATH
+find_script() {
+    local script_name="$1"
+    local script_path
+    local script_dir=$(dirname "$0") # Get the directory of the script
 
-  if [[ "$user_flag" == "--user" ]]; then
-    dirname "$(script -qfc 'env EDITOR="echo" systemctl --user edit --full --force test.service' /dev/null)"
-  else
-    dirname "$(sudo script -qfc 'env EDITOR="echo" systemctl edit --full --force test.service' /dev/null)"
-    if [[ "$?" -ne 0 ]]; then # Check sudo exit status
-      echo "Error: Could not determine systemd unit directory (sudo may require a password or configuration)." >&2
-      return 1 # Indicate failure
+    if [[ -f "$script_dir/$script_name" ]]; then
+        script_path="$script_dir/$script_name"
+    else
+        script_path=$(command -v "$script_name")
     fi
-  fi
+
+    if [[ -z "$script_path" ]]; then
+        echo "Error: $script_name not found." >&2
+        return 1
+    fi
+    echo "$script_path"
 }
 
 # Parse command-line arguments
-user_flag="" # Initialize user_flag to an empty string
+user_flag=""
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --user)
-      user_flag="--user"
-      shift
-      ;;
-    *)
-      echo "Usage: $0 [--user]" >&2
-      exit 1
-      ;;
-  esac
+    case "$1" in
+        --user)
+            user_flag="--user"
+            shift
+            ;;
+        *)
+            echo "Usage: $0 [--user]" >&2
+            exit 1
+            ;;
+    esac
 done
 
-# Get and print the directory
-unit_dir=$(get_systemd_unit_dir "$user_flag")
+# Find the scripts
+link_script=$(find_script "systemd-unitdir-link")
+if [[ $? -ne 0 ]]; then exit 1; fi
+edit_script=$(find_script "systemd-unitdir-edit")
+if [[ $? -ne 0 ]]; then exit 1; fi
 
-if [[ "$?" -eq 0 ]]; then # Check if get_systemd_unit_dir was successful
-  echo "$unit_dir"
+# Get the unit directories using both scripts
+if [[ -n "$user_flag" ]]; then
+    unit_dir_link=$("$link_script" "$user_flag")
+    unit_dir_edit=$("$edit_script" "$user_flag")
+else
+    unit_dir_link=$("$link_script")
+    unit_dir_edit=$("$edit_script")
+fi
+
+# Compare the results
+if [[ "$unit_dir_edit" == "$unit_dir_link" ]]; then
+    echo "$unit_dir_link"
+else
+    echo "$unit_dir_link"
+    echo "$unit_dir_edit"
+    echo "Warning: systemctl link and edit commands are using two different unit directories. Both reported." >&2
+    exit 1
 fi
