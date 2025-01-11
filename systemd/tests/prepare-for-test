@@ -1,0 +1,65 @@
+#!/bin/bash
+# Prepares a Python virtual environment (venv) for a quick Systemd ExecStart syntax test
+# And creates a simp[le Django test site below this scrips directory for the Django 
+# management command tests
+
+# Configure the venv
+venv="test-systemd-python-django"
+venv_dir="$HOME/.venvs/$venv"
+
+# Django project names must be legal Python module names
+# That is match the regular expression ^[a-zA-Z_][a-zA-Z0-9_]*$
+django_project="django_test_site" 
+
+# For a clean preparation we want to check if the venv 
+# already exists and if so rename it so as not to cause
+# undue grief.
+
+backup_target() {
+    if [ -d "$1" ]; then
+      i=0
+      ext=""
+      backup_dir="${1}.backup$ext"
+
+      while [ -d "$backup_dir" ]; do
+        i=$((i + 1))
+        ext=".$i"
+        backup_dir="${1}.backup$ext"
+      done
+
+      mv "$1" "$backup_dir"
+    fi
+}
+
+backup_target "$venv_dir"
+
+# Create the venv
+python3 -m venv "$venv_dir" 
+
+# Activate the venv
+source "$venv_dir/bin/activate"
+
+# Install Django
+pip install django
+
+# Similarly if the Django project already exists, quietly back it 
+# up so as to create a new test bed non destructively.
+backup_target "$django_project"
+
+# Create a Django website
+django-admin startproject "$django_project"
+
+# Get the directory fot he start project
+django_dir=$(realpath "$django_project")
+
+# Create a Djangoo manager for a minimalist site
+manager="$venv_dir/bin/manage"
+
+cat << EOF > "$manager"
+#!/bin/bash
+export PYTHONPATH=$django_dir
+export DJANGO_SETTINGS_MODULE=${django_project}.settings
+django-admin "\$@"
+EOF
+
+chmod +x "$manager"

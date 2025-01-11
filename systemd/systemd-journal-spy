@@ -1,0 +1,180 @@
+#!/bin/bash
+# Uses the systemd utility journalctl to identify all the disk file that store journal entries and report their status and size. 
+# This is particularly useful because the knoledge of where these files is, is hardcoded into a given build and installation of systemd.
+# There's no certain way of knowing on any given system where they are, but journalctl knows!
+#
+# But journalctl does not provide a nice summary of them, and a nice cummary is in fcat very useful is experimenting with the --rotate 
+# or --vaccuum options on the journal. You can using this utility see the impact on journal files and if combined with a snapshotting
+# filesystem or service you could tyr things out and roll back as desired. This script was built to provide the clean summary of 
+# journal files that systemd doesn't provide.
+
+DEBUG=0 # Set to 1 to enable debug, 0 to disable
+
+FUNCTION_RESULT_DELIMITER=$'\x1F' # A character not legal in filenames and paths.
+
+declare -A header
+declare -A journal_files
+
+
+# Function to extract filename and determine category
+get_filename_and_category() {
+    local line="$1"
+    local fullpath
+    local filename
+    local dirname
+    local category
+
+    fullpath="${line#File path: }"
+    filename=$(basename "$fullpath")
+    dirname=$(dirname "$fullpath")
+
+    if [[ "$fullpath" == */system@* ]]; then
+        category="system"
+    elif [[ "$fullpath" == */user-*.journal* ]]; then
+        category="user"
+    elif [[ "$fullpath" == */system.journal* ]]; then
+        category="system"
+    elif [[ "$fullpath" == */user-*.journal* ]]; then
+        category="user"
+    fi
+
+    printf "%s${FUNCTION_RESULT_DELIMITER}%s${FUNCTION_RESULT_DELIMITER}%s${FUNCTION_RESULT_DELIMITER}" "$dirname" "$filename" "$category"
+}
+# Function to process journalctl output and capture relevant data
+scan_journal_files() {
+    local filter="$1"
+    local header_output="$2"
+    local count=0
+    local filename
+    local category
+    local category_key
+
+    tput sc > /dev/tty # Save cursor position BEFORE the loop
+    printf "Scanning Systemd Journal: [" > /dev/tty
+
+    # Use process substitution ONLY ONCE
+    while IFS= read -r line; do
+        if [[ "$line" == "File path:"* ]]; then
+            in_file_block=1
+            IFS="$FUNCTION_RESULT_DELIMITER" read -r -d '' dirname filename category < <(get_filename_and_category "$line")
+
+            if [ "$DEBUG" -ge 1 ]; then echo "New file block for: $filename  (category: $category)" >&2; fi
+
+            if [[ -z "$filter" ]] || [[ "$category" == "$filter" ]]; then
+                unset header
+                declare -A header
+
+                # Read header lines until next "File path:" or empty line
+                while IFS= read -r header_line; do
+                    if [[ "$header_line" == "File path:"* ]]; then
+                        break # Next file
+                    elif [[ -z "$header_line" ]]; then
+                        break # End of current block
+                    fi
+                    
+                    if [[ "$in_file_block" -eq 1 ]]; then
+                        field=$(echo "$header_line" | cut -d: -f1 | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr ' ' '_')
+                        value=$(echo "$header_line" | cut -d: -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                        header["$field"]="$value"
+                        if [ "$DEBUG" -ge 4 ]; then echo "Got \"$value\" for \"$field\" from \"$header_line\"" >&2; fi
+                    fi
+                done
+
+                if [ "$DEBUG" -ge 3 ]; then
+                    echo "Collected:" >&2
+                    for k in "${!header[@]}"; do
+                        echo -e "\t\"$k\" = \"${header[$k]}\"" >&2
+                    done
+                    echo >&2
+                fi
+
+                # Determine the category based on the filename for the sort key
+                if [[ "$filename" =~ ^system\.journal ]]; then
+                    category_key="0"
+                elif [[ "$filename" =~ ^system@.*\.journal ]]; then
+                    category_key="1"
+                elif [[ "$filename" =~ ^user-[0-9]+\.journal$ ]]; then
+                    category_key="2"
+                elif [[ "$filename" =~ ^user-[0-9]+@.*\.journal ]]; then
+                    category_key="3"
+                else
+                    category_key="4"
+                fi
+
+                oline="$category_key\t$category\t${header[State]}\t${header[Disk_usage]}\t$filename"
+                journal_files["$dirname"]+="$oline"$'\n'
+                if [ "$DEBUG" -ge 2 ]; then echo -e "Saved file: $oline" >&2; fi
+
+                printf "#" > /dev/tty
+            else
+                printf "." > /dev/tty
+            fi
+        fi
+    done < <(echo "$header_output") # Process substitution here ONLY ONCE
+
+    printf "]" > /dev/tty
+    tput rc > /dev/tty # Restore cursor position AFTER the loop
+    tput el > /dev/tty # Clear the progress bar line
+    printf "\n"
+}
+
+# Parse command-line options
+filter=""
+show_category=true
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --system)
+            filter="system"
+            show_category=false
+            shift
+            ;;
+        --user)
+            filter="user"
+            show_category=false
+            user_uid=$(id -u)
+            shift
+            ;;
+        *)
+            echo "Usage: $0 [--system] [--user]" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Capture journalctl output ONCE
+header_output=$(journalctl --header)
+
+# Call the function with the filter AND the captured output
+scan_journal_files "$filter" "$header_output"
+
+# Output the results
+output_results() {
+    local filter="$1"
+    local dir="$2"
+    local output_lines="$3"
+
+    if [[ ! -z "$output_lines" ]]; then 
+        if [[ -n $filter ]]; then
+            headings="STATUS\tSIZE\tFILENAME"
+        else
+            headings="SCOPE\tSTATUS\tSIZE\tFILENAME"
+        fi
+        echo "Journal Directory: $dir:"
+        printf "$headings\n%s" "$output_lines" | column -t -s $'\t' | sed 's/^/\t/'
+    fi
+}
+
+# Process and output results grouped by directory
+for dir in "${!journal_files[@]}"; do
+    output_lines=""
+
+    if [[ "$filter" == "user" ]]; then
+        output_lines=$(echo -e "${journal_files[$dir]}" | sort -n | grep "user-$user_uid" | cut -f3-)
+    elif [[ "$filter" == "system" ]]; then
+        output_lines=$(echo -e "${journal_files[$dir]}" | sort -n | grep -v '^\s*$' | cut -f3-)
+    else 
+        output_lines=$(echo -e "${journal_files[$dir]}" | sort -n | grep -v '^\s*$' | cut -f2-)
+    fi
+
+    output_results "$filter" "$dir" "$output_lines"
+done

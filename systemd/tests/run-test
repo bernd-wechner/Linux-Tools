@@ -1,0 +1,7 @@
+#!/bin/bash
+# Runs a test. After editing the service file this simply runs the sequence that tests the new edit
+../systemd-install-unit --user ExecStart-test.service 
+journalctl --user -u ExecStart-test.service 
+systemctl --user start ExecStart-test.service
+journalctl --user -u ExecStart-test.service 
+
