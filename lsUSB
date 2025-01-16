@@ -1,0 +1,60 @@
+#!/bin/bash
+#
+# lsUSB: a wrapper around lsusb to list USB devices, in a more tabular format and saliently
+#        listing any TTY devices associated with a USB device. It's very tedious trying to 
+#        find out the /de/vttyUSBn device assocated with a USB tty on Linux. This simply
+#        automates the discovery process. Empirically developed (i.e. not with profound 
+#        understanding of the relationship between USB devices and device files and the 
+#        kernel etc. At time of parking htis, it does list tty devices against the hubs 
+#        that USB ttys are plugged into too. That's liveable.
+#
+export PS4='+${BASH_SOURCE}:${LINENO}:${FUNCNAME[0]}: '
+
+
+declare -A tty_map # Declare associative array
+
+for dev_dir in /sys/bus/usb/devices/*; do
+    if [[ -d "$dev_dir" ]]; then
+        if [[ -f "$dev_dir/uevent" ]]; then
+            busnum=$(grep -oP '(?<=BUSNUM=).+' "$dev_dir/uevent")
+            devnum=$(grep -oP '(?<=DEVNUM=).+' "$dev_dir/uevent")
+
+            if [[ ! -z "$busnum" && ! -z "$devnum" ]]; then
+                tty_path=$(find "$dev_dir/." -name "tty" -print -quit)
+                if [[ ! -z "$tty_path" ]]; then
+                    tty_dev=$(ls "$tty_path")
+                    # Extract bus and device from tty_path
+                    dev_path=$(dirname "$tty_path")
+                    if [[ -n "$tty_dev" ]]; then
+                        tty_map["${busnum}:${devnum}"]="/dev/$tty_dev"
+                    fi
+                fi
+            fi
+        fi
+    fi
+done
+
+format="%-3s %-6s %-14s %-8s %-9s %s"
+printf "$format\n" "BUS" "DEVICE" "TTY" "VendorID" "ProductID" "Description" 
+
+lsusb | while IFS= read -r line; do
+  if [[ "$line" =~ Bus\ ([0-9]+)\ Device\ ([0-9]+):\ ID\ ([0-9a-fA-F]{4}):([0-9a-fA-F]{4})\ (.*) ]]; then
+    bus="${BASH_REMATCH[1]}"
+    device="${BASH_REMATCH[2]}"
+    vendor="${BASH_REMATCH[3]}"
+    product="${BASH_REMATCH[4]}"
+    description="${BASH_REMATCH[5]}"
+
+    key="${bus}:${device}"
+    tty="${tty_map[$key]}"
+
+    if [[ -z "$tty" ]]; then
+      tty="None"
+    fi
+
+    printf "$format\n" "$bus" "$device" "$tty" "$vendor" "$product" "$description" # Formatted output
+  else
+    # Should never happen, if it does the regex that prses lsusb output above needs fixing.
+    echo "ERROR Unhandled device: $line"
+  fi
+done
