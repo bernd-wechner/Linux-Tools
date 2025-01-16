@@ -100,6 +100,9 @@ for disk in "${disks[@]}"; do
         bit[$i]=$(((val & mask) && 1))
         mask=$((mask << 1))
     done
+   
+   	# Find the mountpoint if any
+   	mount=$(mount | grep "$disk" | awk '{print $3}' | paste -sd ';' -)
 
     #for b in "${!bit[@]}"; do
     #    echo $b: ${bit[$b]}
@@ -126,7 +129,7 @@ for disk in "${disks[@]}"; do
         sortopt=n$r
     fi
         
-    summary+=("$sortkey,$disk,$type,$size,$status,$model,$rotation,${temperature}°C,$cycles,$uptime")
+    summary+=("$sortkey,$disk,$mount,$type,$size,$status,$model,$rotation,${temperature}°C,$cycles,$uptime")
 done
 
 HIGHLIGHT=$(tput setaf 1)
@@ -140,4 +143,4 @@ for line in "${sorted[@]}"; do
     else
         echo "$line"
     fi
-done | column -ts, -N "Disk,Type,Size,SMART Health,Model,Rotation,Temperature,Power Cycles,Time In Service"
+done | column -ts, -N "Disk,Mounts,Type,Size,SMART Health,Model,Rotation,Temperature,Power Cycles,Time In Service"
